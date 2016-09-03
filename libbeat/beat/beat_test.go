@@ -1,3 +1,5 @@
+// +build !integration
+
 package beat
 
 import (
@@ -7,10 +9,8 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func Test_NewBeat(t *testing.T) {
-
-	tb := &TestBeater{}
-	b := NewBeat("testbeat", "0.9", tb)
+func TestNewInstance(t *testing.T) {
+	b := newBeat("testbeat", "0.9")
 
 	assert.Equal(t, "testbeat", b.Name)
 	assert.Equal(t, "0.9", b.Version)
@@ -20,32 +20,9 @@ func Test_NewBeat(t *testing.T) {
 	assert.Equal(t, 36, len(b.UUID.String()))
 }
 
-func Test_NewBeat_UUID(t *testing.T) {
-
-	tb := &TestBeater{}
-	b := NewBeat("testbeat", "0.9", tb)
+func TestNewInstanceUUID(t *testing.T) {
+	b := newBeat("testbeat", "0.9")
 
 	// Make sure the UUID's are different
 	assert.NotEqual(t, b.UUID, uuid.NewV4())
-}
-
-// Test beat object
-type TestBeater struct {
-}
-
-func (tb *TestBeater) Config(b *Beat) error {
-	return nil
-}
-func (tb *TestBeater) Setup(b *Beat) error {
-	return nil
-}
-func (tb *TestBeater) Run(b *Beat) error {
-	return nil
-}
-
-func (tb *TestBeater) Cleanup(b *Beat) error {
-	return nil
-}
-
-func (tb *TestBeater) Stop() {
 }

@@ -1,3 +1,7 @@
+/*
+Package beater provides the implementation of the libbeat Beater interface for
+Winlogbeat. The main event loop is implemented in this package.
+*/
 package beater
 
 import (
@@ -5,14 +9,13 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/elastic/beats/libbeat/beat"
-	"github.com/elastic/beats/libbeat/cfgfile"
 	"github.com/elastic/beats/libbeat/common"
 	"github.com/elastic/beats/libbeat/logp"
+	"github.com/elastic/beats/libbeat/paths"
 	"github.com/elastic/beats/libbeat/publisher"
 	"github.com/elastic/beats/winlogbeat/checkpoint"
 	"github.com/elastic/beats/winlogbeat/config"
@@ -22,8 +25,8 @@ import (
 // Metrics that can retrieved through the expvar web interface. Metrics must be
 // enable through configuration in order for the web service to be started.
 var (
-	publishedEvents = expvar.NewMap("publishedEvents")
-	ignoredEvents   = expvar.NewMap("ignoredEvents")
+	publishedEvents = expvar.NewMap("published_events")
+	ignoredEvents   = expvar.NewMap("ignored_events")
 )
 
 func init() {
@@ -33,80 +36,87 @@ func init() {
 // Debug logging functions for this package.
 var (
 	debugf    = logp.MakeDebug("winlogbeat")
-	detailf   = logp.MakeDebug("winlogbeat_detail")
 	memstatsf = logp.MakeDebug("memstats")
 )
 
 // Time the application was started.
 var startTime = time.Now().UTC()
 
-type log struct {
-	config.EventLogConfig
-	eventLog eventlog.EventLog
-}
-
 // Winlogbeat is used to conform to the beat interface
 type Winlogbeat struct {
 	beat       *beat.Beat             // Common beat information.
 	config     *config.Settings       // Configuration settings.
-	eventLogs  []log                  // List of all event logs being monitored.
+	eventLogs  []eventlog.EventLog    // List of all event logs being monitored.
 	done       chan struct{}          // Channel to initiate shutdown of main event loop.
 	client     publisher.Client       // Interface to publish event.
 	checkpoint *checkpoint.Checkpoint // Persists event log state to disk.
 }
 
 // New returns a new Winlogbeat.
-func New() *Winlogbeat {
-	return &Winlogbeat{}
+func New(b *beat.Beat, _ *common.Config) (beat.Beater, error) {
+	// Read configuration.
+	// XXX: winlogbeat validates top-level config -> ignore beater config and
+	//      parse complete top-level config
+	config := config.DefaultSettings
+	rawConfig := b.RawConfig
+	err := rawConfig.Unpack(&config)
+	if err != nil {
+		return nil, fmt.Errorf("Error reading configuration file. %v", err)
+	}
+
+	// reslove registry file path
+	config.Winlogbeat.RegistryFile = paths.Resolve(
+		paths.Data, config.Winlogbeat.RegistryFile)
+	logp.Info("State will be read from and persisted to %s",
+		config.Winlogbeat.RegistryFile)
+
+	eb := &Winlogbeat{
+		beat:   b,
+		config: &config,
+		done:   make(chan struct{}),
+	}
+
+	if err := eb.init(b); err != nil {
+		return nil, err
+	}
+
+	return eb, nil
 }
 
-// Config sets up the necessary configuration to use the winlogbeat
-func (eb *Winlogbeat) Config(b *beat.Beat) error {
-	// Read configuration.
-	err := cfgfile.Read(&eb.config, "")
-	if err != nil {
-		return fmt.Errorf("Error reading configuration file. %v", err)
-	}
+func (eb *Winlogbeat) init(b *beat.Beat) error {
+	config := &eb.config.Winlogbeat
 
-	// Validate configuration.
-	err = eb.config.Winlogbeat.Validate()
-	if err != nil {
-		return fmt.Errorf("Error validating configuration file. %v", err)
-	}
-	debugf("Configuration validated. config=%v", eb.config)
+	// Create the event logs. This will validate the event log specific
+	// configuration.
+	eb.eventLogs = make([]eventlog.EventLog, 0, len(config.EventLogs))
+	for _, config := range config.EventLogs {
+		eventLog, err := eventlog.New(config)
+		if err != nil {
+			return fmt.Errorf("Failed to create new event log. %v", err)
+		}
+		debugf("Initialized EventLog[%s]", eventLog.Name())
 
-	// Registry file grooming.
-	if eb.config.Winlogbeat.RegistryFile == "" {
-		eb.config.Winlogbeat.RegistryFile = config.DefaultRegistryFile
+		eb.eventLogs = append(eb.eventLogs, eventLog)
 	}
-	eb.config.Winlogbeat.RegistryFile, err = filepath.Abs(
-		eb.config.Winlogbeat.RegistryFile)
-	if err != nil {
-		return fmt.Errorf("Error getting absolute path of registry file %s. %v",
-			eb.config.Winlogbeat.RegistryFile, err)
-	}
-	logp.Info("State will be read from and persisted to %s",
-		eb.config.Winlogbeat.RegistryFile)
 
 	return nil
 }
 
 // Setup uses the loaded config and creates necessary markers and environment
 // settings to allow the beat to be used.
-func (eb *Winlogbeat) Setup(b *beat.Beat) error {
-	eb.beat = b
-	eb.client = b.Events
-	eb.done = make(chan struct{})
+func (eb *Winlogbeat) setup(b *beat.Beat) error {
+	config := &eb.config.Winlogbeat
+
+	eb.client = b.Publisher.Connect()
 
 	var err error
-	eb.checkpoint, err = checkpoint.NewCheckpoint(
-		eb.config.Winlogbeat.RegistryFile, 10, 5*time.Second)
+	eb.checkpoint, err = checkpoint.NewCheckpoint(config.RegistryFile, 10, 5*time.Second)
 	if err != nil {
 		return err
 	}
 
-	if eb.config.Winlogbeat.Metrics.BindAddress != "" {
-		bindAddress := eb.config.Winlogbeat.Metrics.BindAddress
+	if config.Metrics.BindAddress != "" {
+		bindAddress := config.Metrics.BindAddress
 		sock, err := net.Listen("tcp", bindAddress)
 		if err != nil {
 			return err
@@ -116,7 +126,6 @@ func (eb *Winlogbeat) Setup(b *beat.Beat) error {
 			err := http.Serve(sock, nil)
 			if err != nil {
 				logp.Warn("Unable to launch HTTP service for metrics. %v", err)
-				return
 			}
 		}()
 	}
@@ -124,48 +133,29 @@ func (eb *Winlogbeat) Setup(b *beat.Beat) error {
 	return nil
 }
 
-// Run is used within the beats interface to execute the winlogbeat.
+// Run is used within the beats interface to execute the Winlogbeat workers.
 func (eb *Winlogbeat) Run(b *beat.Beat) error {
+	if err := eb.setup(b); err != nil {
+		return err
+	}
+
 	persistedState := eb.checkpoint.States()
 
 	// Initialize metrics.
 	publishedEvents.Add("total", 0)
-	publishedEvents.Add("failures", 0)
 	ignoredEvents.Add("total", 0)
-
-	// TODO: If no event_logs are specified in the configuration, use the
-	// Windows registry to discover the available event logs.
-	eb.eventLogs = make([]log, 0, len(eb.config.Winlogbeat.EventLogs))
-	for _, eventLogConfig := range eb.config.Winlogbeat.EventLogs {
-		debugf("Initializing EventLog[%s]", eventLogConfig.Name)
-
-		eventLog, err := eventlog.New(eventlog.Config{
-			Name: eventLogConfig.Name,
-			API:  eventLogConfig.API,
-		})
-		if err != nil {
-			return fmt.Errorf("Failed to create new event log for %s. %v",
-				eventLogConfig.Name, err)
-		}
-
-		// Initialize per event log metrics.
-		publishedEvents.Add(eventLogConfig.Name, 0)
-		ignoredEvents.Add(eventLogConfig.Name, 0)
-
-		eb.eventLogs = append(eb.eventLogs, log{
-			EventLogConfig: eventLogConfig,
-			eventLog:       eventLog,
-		})
-	}
 
 	var wg sync.WaitGroup
 	for _, log := range eb.eventLogs {
-		state, _ := persistedState[log.Name]
-		ignoreOlder, _ := config.IgnoreOlderDuration(log.IgnoreOlder)
+		state, _ := persistedState[log.Name()]
+
+		// Initialize per event log metrics.
+		publishedEvents.Add(log.Name(), 0)
+		ignoredEvents.Add(log.Name(), 0)
 
 		// Start a goroutine for each event log.
 		wg.Add(1)
-		go eb.processEventLog(&wg, log.eventLog, state, ignoreOlder)
+		go eb.processEventLog(&wg, log, state)
 	}
 
 	wg.Wait()
@@ -173,25 +163,11 @@ func (eb *Winlogbeat) Run(b *beat.Beat) error {
 	return nil
 }
 
-// Cleanup attempts to remove any files or data it may have created which should
-// not be persisted.
-func (eb *Winlogbeat) Cleanup(b *beat.Beat) error {
-	logp.Info("Dumping runtime metrics...")
-	expvar.Do(func(kv expvar.KeyValue) {
-		logf := logp.Info
-		if kv.Key == "memstats" {
-			logf = memstatsf
-		}
-
-		logf("%s=%s", kv.Key, kv.Value.String())
-	})
-	return nil
-}
-
 // Stop is used to tell the winlogbeat that it should cease executing.
 func (eb *Winlogbeat) Stop() {
 	logp.Info("Stopping Winlogbeat")
 	if eb.done != nil {
+		eb.client.Close()
 		close(eb.done)
 	}
 }
@@ -200,7 +176,6 @@ func (eb *Winlogbeat) processEventLog(
 	wg *sync.WaitGroup,
 	api eventlog.EventLog,
 	state checkpoint.EventLogState,
-	ignoreOlder time.Duration,
 ) {
 	defer wg.Done()
 
@@ -211,8 +186,9 @@ func (eb *Winlogbeat) processEventLog(
 		return
 	}
 	defer func() {
-		err := api.Close()
-		if err != nil {
+		logp.Info("EventLog[%s] Stop processing.", api.Name())
+
+		if err := api.Close(); err != nil {
 			logp.Warn("EventLog[%s] Close() error. %v", api.Name(), err)
 			return
 		}
@@ -220,11 +196,10 @@ func (eb *Winlogbeat) processEventLog(
 
 	debugf("EventLog[%s] opened successfully", api.Name())
 
-loop:
 	for {
 		select {
 		case <-eb.done:
-			break loop
+			return
 		default:
 		}
 
@@ -242,41 +217,28 @@ loop:
 			continue
 		}
 
-		// Filter events.
-		var events []common.MapStr
+		events := make([]common.MapStr, 0, len(records))
 		for _, lr := range records {
-			// TODO: Move filters close to source. Short circuit processing
-			// of event if it is going to be filtered.
-			// TODO: Add a severity filter.
-			// TODO: Check the global IgnoreOlder filter.
-			if ignoreOlder != 0 && time.Since(lr.TimeGenerated) > ignoreOlder {
-				detailf("EventLog[%s] ignore_older filter dropping event: %s",
-					api.Name(), lr.String())
-				ignoredEvents.Add("total", 1)
-				ignoredEvents.Add(api.Name(), 1)
-				continue
-			}
-
 			events = append(events, lr.ToMapStr())
 		}
 
 		// Publish events.
 		numEvents := int64(len(events))
 		ok := eb.client.PublishEvents(events, publisher.Sync, publisher.Guaranteed)
-		if ok {
-			publishedEvents.Add("total", numEvents)
-			publishedEvents.Add(api.Name(), numEvents)
-			logp.Info("EventLog[%s] Successfully published %d events",
-				api.Name(), numEvents)
-		} else {
-			logp.Warn("EventLog[%s] Failed to publish %d events",
-				api.Name(), numEvents)
-			publishedEvents.Add("failures", 1)
+		if !ok {
+			// due to using Sync and Guaranteed the ok will only be false on shutdown.
+			// Do not update the internal state and return in this case
+			return
 		}
 
+		publishedEvents.Add("total", numEvents)
+		publishedEvents.Add(api.Name(), numEvents)
+		logp.Info("EventLog[%s] Successfully published %d events",
+			api.Name(), numEvents)
+
 		eb.checkpoint.Persist(api.Name(),
-			records[len(records)-1].RecordNumber,
-			records[len(records)-1].TimeGenerated.UTC())
+			records[len(records)-1].RecordID,
+			records[len(records)-1].TimeCreated.SystemTime.UTC())
 	}
 }
 

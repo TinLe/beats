@@ -1,8 +1,8 @@
 // Copyright (c) 2012 VMware, Inc.
 
-// +build darwin freebsd linux netbsd openbsd
+// +build darwin freebsd linux netbsd
 
-package sigar
+package gosigar
 
 import "syscall"
 
@@ -18,7 +18,7 @@ func (self *FileSystemUsage) Get(path string) error {
 	self.Avail = uint64(stat.Bavail) * uint64(stat.Bsize)
 	self.Used = self.Total - self.Free
 	self.Files = stat.Files
-	self.FreeFiles = stat.Ffree
+	self.FreeFiles = uint64(stat.Ffree)
 
 	return nil
 }

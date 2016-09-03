@@ -1,7 +1,11 @@
 
-BEATNAME=packetbeat
+BEATNAME?=packetbeat
+BEAT_DESCRIPTION?=A network analyzer tool that sends data to Elasticsearch.
 SYSTEM_TESTS=true
 TEST_ENVIRONMENT=false
+TARGETS="windows/amd64 windows/386 darwin/amd64"
+TARGETS_OLD="linux/amd64 linux/386"
+CGO=true
 
 include ../libbeat/scripts/Makefile
 
@@ -9,26 +13,19 @@ include ../libbeat/scripts/Makefile
 with_pfring:
 	go build --tags havepfring
 
-
-# This is called by the beats-packer to obtain the configuration file
-.PHONY: install-cfg
-install-cfg:
-	cp etc/packetbeat.template.json $(PREFIX)/packetbeat.template.json
-	# linux
-	cp packetbeat.yml $(PREFIX)/packetbeat-linux.yml
-	# binary
-	cp packetbeat.yml $(PREFIX)/packetbeat-binary.yml
-	# darwin
-	cp packetbeat.yml $(PREFIX)/packetbeat-darwin.yml
+# This is called by the beats packer before building starts
+.PHONY: before-build
+before-build:
 	sed -i.bk 's/device: any/device: en0/' $(PREFIX)/packetbeat-darwin.yml
 	rm $(PREFIX)/packetbeat-darwin.yml.bk
+	sed -i.bk 's/device: any/device: en0/' $(PREFIX)/packetbeat-darwin.full.yml
+	rm $(PREFIX)/packetbeat-darwin.full.yml.bk
 	# win
-	cp packetbeat.yml $(PREFIX)/packetbeat-win.yml
 	sed -i.bk 's/device: any/device: 0/' $(PREFIX)/packetbeat-win.yml
 	rm $(PREFIX)/packetbeat-win.yml.bk
-
-
+	sed -i.bk 's/device: any/device: 0/' $(PREFIX)/packetbeat-win.full.yml
+	rm $(PREFIX)/packetbeat-win.full.yml.bk
 
 .PHONY: benchmark
 benchmark:
-	$(GODEP) go test -short -bench=. ./... -cpu=2
+	go test -short -bench=. ./... -cpu=2

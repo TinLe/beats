@@ -3,91 +3,136 @@ package cfgfile
 import (
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
-	"strings"
 
-	"github.com/elastic/beats/libbeat/logp"
-	"gopkg.in/yaml.v2"
+	"github.com/elastic/beats/libbeat/common"
 )
 
-// Command line flags
-var configfile *string
-var testConfig *bool
+// Command line flags.
+var (
+	// The default config cannot include the beat name as it is not initialized
+	// when this variable is created. See ChangeDefaultCfgfileFlag which should
+	// be called prior to flags.Parse().
+	configfiles = flagArgList("c", "beat.yml", "Configuration file, relative to path.config")
+	overwrites  = common.NewFlagConfig(nil, nil, "E", "Configuration overwrite")
+	testConfig  = flag.Bool("configtest", false, "Test configuration and exit.")
+
+	// Additional default settings, that must be available for variable expansion
+	defaults = mustNewConfigFrom(map[string]interface{}{
+		"path": map[string]interface{}{
+			"home":   ".", // to be initialized by beat
+			"config": "${path.home}",
+			"data":   fmt.Sprint("${path.home}", string(os.PathSeparator), "data"),
+			"logs":   fmt.Sprint("${path.home}", string(os.PathSeparator), "logs"),
+		},
+	})
+
+	// home-path CLI flag (initialized in init)
+	homePath   *string
+	configPath *string
+)
 
 func init() {
-	// The default config cannot include the beat name as it is not initialised when this
-	// function is called, but see ChangeDefaultCfgfileFlag
-	configfile = flag.String("c", "beat.yml", "Configuration file")
-	testConfig = flag.Bool("configtest", false, "Test configuration and exit.")
-}
-
-// ChangeDefaultCfgfileFlag replaces the value and default value for the `-c` flag so that
-// it reflects the beat name.
-func ChangeDefaultCfgfileFlag(beatName string) error {
-	cliflag := flag.Lookup("c")
-	if cliflag == nil {
-		return fmt.Errorf("Flag -c not found")
+	// add '-path.x' options overwriting paths in 'overwrites' config
+	makePathFlag := func(name, usage string) *string {
+		return common.NewFlagOverwrite(nil, overwrites, name, name, "", usage)
 	}
 
-	path, err := filepath.Abs(filepath.Dir(os.Args[0]))
+	homePath = makePathFlag("path.home", "Home path")
+	configPath = makePathFlag("path.config", "Configuration path")
+	makePathFlag("path.data", "Data path")
+	makePathFlag("path.logs", "Logs path")
+}
+
+func mustNewConfigFrom(from interface{}) *common.Config {
+	cfg, err := common.NewConfigFrom(from)
 	if err != nil {
-		return fmt.Errorf("Failed to set default config file location because the absolute path to %s could not be obtained. %v", os.Args[0], err)
+		panic(err)
 	}
-
-	cliflag.DefValue = filepath.Join(path, beatName+".yml")
-
-	return cliflag.Value.Set(cliflag.DefValue)
+	return cfg
 }
 
-// Read reads the configuration from a yaml file into the given interface structure.
-// In case path is not set this method reads from the default configuration file for the beat.
+// ChangeDefaultCfgfileFlag replaces the value and default value for the `-c`
+// flag so that it reflects the beat name.
+func ChangeDefaultCfgfileFlag(beatName string) error {
+	configfiles.SetDefault(beatName + ".yml")
+	return nil
+}
+
+// HandleFlags adapts default config settings based on command line flags.
+func HandleFlags() error {
+
+	// default for the home path is the binary location
+	home, err := filepath.Abs(filepath.Dir(os.Args[0]))
+	if err != nil {
+		if *homePath == "" {
+			return fmt.Errorf("The absolute path to %s could not be obtained. %v",
+				os.Args[0], err)
+		}
+		home = *homePath
+	}
+
+	defaults.SetString("path.home", -1, home)
+	return nil
+}
+
+// Deprecated: Please use Load().
+//
+// Read reads the configuration from a YAML file into the given interface
+// structure. If path is empty this method reads from the configuration
+// file specified by the '-c' command line flag.
 func Read(out interface{}, path string) error {
+	config, err := Load(path)
+	if err != nil {
+		return nil
+	}
+
+	return config.Unpack(out)
+}
+
+// Load reads the configuration from a YAML file structure. If path is empty
+// this method reads from the configuration file specified by the '-c' command
+// line flag.
+func Load(path string) (*common.Config, error) {
+	var config *common.Config
+	var err error
+
+	cfgpath := ""
+	if *configPath != "" {
+		cfgpath = *configPath
+	} else if *homePath != "" {
+		cfgpath = *homePath
+	}
 
 	if path == "" {
-		path = *configfile
+		list := []string{}
+		for _, cfg := range configfiles.list {
+			if !filepath.IsAbs(cfg) {
+				list = append(list, filepath.Join(cfgpath, cfg))
+			} else {
+				list = append(list, cfg)
+			}
+		}
+		config, err = common.LoadFiles(list...)
+	} else {
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(cfgpath, path)
+		}
+		config, err = common.LoadFile(path)
 	}
-
-	filecontent, err := ioutil.ReadFile(path)
 	if err != nil {
-		return fmt.Errorf("Failed to read %s: %v. Exiting.", path, err)
+		return nil, err
 	}
 
-	filecontent = expandEnv(filecontent)
-
-	if err = yaml.Unmarshal(filecontent, out); err != nil {
-		return fmt.Errorf("YAML config parsing failed on %s: %v. Exiting", path, err)
-	}
-
-	return nil
+	return common.MergeConfigs(
+		defaults,
+		config,
+		overwrites,
+	)
 }
 
 // IsTestConfig returns whether or not this is configuration used for testing
 func IsTestConfig() bool {
 	return *testConfig
-}
-
-// expandEnv replaces ${var} or $var in config according to the values of the
-// current environment variables. The replacement is case-sensitive. References
-// to undefined variables are replaced by the empty string. A default value
-// can be given by using the form ${var:default value}.
-func expandEnv(config []byte) []byte {
-	return []byte(os.Expand(string(config), func(key string) string {
-		keyAndDefault := strings.SplitN(key, ":", 2)
-		key = keyAndDefault[0]
-
-		v := os.Getenv(key)
-		if v == "" && len(keyAndDefault) == 2 {
-			// Set value to the default.
-			v = keyAndDefault[1]
-			logp.Info("Replacing config environment variable '${%s}' with "+
-				"default '%s'", key, keyAndDefault[1])
-		} else {
-			logp.Info("Replacing config environment variable '${%s}' with '%s'",
-				key, v)
-		}
-
-		return v
-	}))
 }

@@ -1,67 +1,77 @@
+/*
+Package redis contains shared Redis functionality for the metric sets
+*/
 package redis
 
 import (
+	"strings"
+	"time"
+
 	"github.com/elastic/beats/libbeat/logp"
 
-	"github.com/elastic/beats/metricbeat/helper"
-
-	"github.com/garyburd/redigo/redis"
-
-	"os"
+	rd "github.com/garyburd/redigo/redis"
 )
 
-func init() {
-	Module.Register()
+// ParseRedisInfo parses the string returned by the INFO command
+// Every line is split up into key and value
+func ParseRedisInfo(info string) map[string]string {
+	// Feed every line into
+	result := strings.Split(info, "\r\n")
+
+	// Load redis info values into array
+	values := map[string]string{}
+
+	for _, value := range result {
+		// Values are separated by :
+		parts := ParseRedisLine(value, ":")
+		if len(parts) == 2 {
+			values[parts[0]] = parts[1]
+		}
+	}
+	return values
 }
 
-var Module = helper.NewModule("redis", Redis{})
-
-var Config = &RedisModuleConfig{}
-
-type RedisModuleConfig struct {
-	Metrics map[string]interface{}
-	Hosts   []string
+// ParseRedisLine parses a single line returned by INFO
+func ParseRedisLine(s string, delimeter string) []string {
+	return strings.Split(s, delimeter)
 }
 
-type Redis struct {
-	Name   string
-	Config RedisModuleConfig
-}
+// FetchRedisStats returns a map of requested stats
+func FetchRedisInfo(stat string, c rd.Conn) (map[string]string, error) {
+	defer c.Close()
 
-func (r Redis) Setup() error {
-	// Loads module config
-	// This is module specific config object
-	Module.LoadConfig(&Config)
-	return nil
-}
-
-func Connect(host string) (redis.Conn, error) {
-
-	conn, err := redis.Dial("tcp", host)
+	out, err := rd.String(c.Do("INFO", stat))
 	if err != nil {
-		logp.Err("Redis connection error: %v", err)
+		logp.Err("Error retrieving INFO stats: %v", err)
+		return nil, err
 	}
-
-	//defer conn.Close()
-	return conn, err
+	return ParseRedisInfo(out), nil
 }
 
-///*** Helper functions for testing ***///
-
-func GetRedisEnvHost() string {
-	host := os.Getenv("REDIS_HOST")
-
-	if len(host) == 0 {
-		host = "127.0.0.1"
+// CreatePool creates a redis connection pool
+func CreatePool(
+	host, password, network string,
+	maxConn int,
+	idleTimeout, connTimeout time.Duration,
+) *rd.Pool {
+	return &rd.Pool{
+		MaxIdle:     maxConn,
+		IdleTimeout: idleTimeout,
+		Dial: func() (rd.Conn, error) {
+			c, err := rd.Dial(network, host,
+				rd.DialConnectTimeout(connTimeout),
+				rd.DialReadTimeout(connTimeout),
+				rd.DialWriteTimeout(connTimeout))
+			if err != nil {
+				return nil, err
+			}
+			if password != "" {
+				if _, err := c.Do("AUTH", password); err != nil {
+					c.Close()
+					return nil, err
+				}
+			}
+			return c, err
+		},
 	}
-	return host
-}
-
-func GetRedisEnvPort() string {
-	port := os.Getenv("REDIS_PORT")
-
-	if len(port) == 0 {
-		port = "6379"
-	}
-	return port
 }

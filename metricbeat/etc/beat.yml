@@ -1,25 +1,46 @@
-metricbeat:
-  modules:
-    #golang:
-    #  metrics:
-    #    expvar:
-    #      period: 10s
-    apache:
-      hosts: ["http://127.0.0.1/"]
-      metricsets:
-        status:
-          period: 1s
-    redis:
-      hosts:
-        - "127.0.0.1:6379"
-      metricsets:
-        info:
-          period: 1s
-    mysql:
-      # This expectd a full mysql dsn
-      # Example: [username[:password]@][protocol[(address)]]/
-      hosts:
-        - "root@tcp(127.0.0.1:3306)/"
-      metricsets:
-        status:
-          period: 1s
+###################### Metricbeat Configuration Example #######################
+
+# This file is an example configuration file highlighting only the most common
+# options. The metricbeat.full.yml file from the same directory contains all the
+# supported options with more comments. You can use it as a reference.
+#
+# You can find the full configuration reference here:
+# https://www.elastic.co/guide/en/beats/metricbeat/index.html
+
+#==========================  Modules configuration ============================
+metricbeat.modules:
+
+#------------------------------- System Module -------------------------------
+- module: system
+  metricsets:
+    # CPU stats
+    - cpu
+
+    # System Load stats
+    - load
+
+    # Per CPU core stats
+    #- core
+
+    # IO stats
+    #- diskio
+
+    # Per filesystem stats
+    - filesystem
+
+    # File system summary stats
+    #- fsstat
+
+    # Memory stats
+    - memory
+
+    # Network stats
+    - network
+
+    # Per process stats
+    - process
+  enabled: true
+  period: 10s
+  processes: ['.*']
+
+

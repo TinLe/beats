@@ -19,17 +19,10 @@ Packetbeat sniffs the traffic between your servers, parses the
 application-level protocols on the fly, and correlates the messages into transactions.
 Currently, Packetbeat supports the following protocols:
 
- * HTTP
- * MySQL
- * PostgreSQL
- * Redis
- * Thrift-RPC
- * MongoDB
- * DNS
- * Memcache
+include::shared-protocol-list.asciidoc[]
 
 Packetbeat can insert the correlated transactions directly into Elasticsearch
-or into a central queue created with Redis (DEPRECATED) and Logstash. 
+or into a central queue created with Redis and Logstash. 
 
 Packetbeat can run on the same servers as your application processes or
 on its own servers. When running on dedicated servers, Packetbeat can get the

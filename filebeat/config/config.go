@@ -1,90 +1,39 @@
 package config
 
 import (
+	"errors"
 	"log"
 	"os"
 	"path/filepath"
-	"regexp"
 	"time"
 
 	"github.com/elastic/beats/libbeat/cfgfile"
 	"github.com/elastic/beats/libbeat/common"
 	"github.com/elastic/beats/libbeat/logp"
+	"github.com/elastic/beats/libbeat/paths"
 )
 
 // Defaults for config variables which are not set
 const (
-	DefaultRegistryFile                      = ".filebeat"
-	DefaultIgnoreOlderDuration time.Duration = 0
-	DefaultCloseOlderDuration  time.Duration = 1 * time.Hour
-	DefaultScanFrequency       time.Duration = 10 * time.Second
-	DefaultSpoolSize           uint64        = 2048
-	DefaultIdleTimeout         time.Duration = 5 * time.Second
-	DefaultHarvesterBufferSize int           = 16 << 10 // 16384
-	DefaultInputType                         = "log"
-	DefaultDocumentType                      = "log"
-	DefaultTailFiles                         = false
-	DefaultBackoff                           = 1 * time.Second
-	DefaultBackoffFactor                     = 2
-	DefaultMaxBackoff                        = 10 * time.Second
-	DefaultForceCloseFiles                   = false
-	DefaultMaxBytes                          = 10 * (1 << 20) // 10MB
+	DefaultInputType = "log"
 )
 
 type Config struct {
-	Filebeat FilebeatConfig
+	Prospectors  []*common.Config `config:"prospectors"`
+	SpoolSize    uint64           `config:"spool_size" validate:"min=1"`
+	PublishAsync bool             `config:"publish_async"`
+	IdleTimeout  time.Duration    `config:"idle_timeout" validate:"nonzero,min=0s"`
+	RegistryFile string           `config:"registry_file"`
+	ConfigDir    string           `config:"config_dir"`
 }
 
-type FilebeatConfig struct {
-	Prospectors  []ProspectorConfig
-	SpoolSize    uint64        `yaml:"spool_size"`
-	PublishAsync bool          `yaml:"publish_async"`
-	IdleTimeout  time.Duration `yaml:"idle_timeout"`
-	RegistryFile string        `yaml:"registry_file"`
-	ConfigDir    string        `yaml:"config_dir"`
-}
-
-type ProspectorConfig struct {
-	ExcludeFiles          []string `yaml:"exclude_files"`
-	ExcludeFilesRegexp    []*regexp.Regexp
-	Harvester             HarvesterConfig `yaml:",inline"`
-	Input                 string
-	IgnoreOlder           string `yaml:"ignore_older"`
-	IgnoreOlderDuration   time.Duration
-	Paths                 []string
-	ScanFrequency         string `yaml:"scan_frequency"`
-	ScanFrequencyDuration time.Duration
-}
-
-type HarvesterConfig struct {
-	BufferSize         int    `yaml:"harvester_buffer_size"`
-	DocumentType       string `yaml:"document_type"`
-	Encoding           string `yaml:"encoding"`
-	Fields             common.MapStr
-	FieldsUnderRoot    bool   `yaml:"fields_under_root"`
-	InputType          string `yaml:"input_type"`
-	TailFiles          bool   `yaml:"tail_files"`
-	Backoff            string `yaml:"backoff"`
-	BackoffDuration    time.Duration
-	BackoffFactor      int    `yaml:"backoff_factor"`
-	MaxBackoff         string `yaml:"max_backoff"`
-	MaxBackoffDuration time.Duration
-	CloseOlder         string `yaml:"close_older"`
-	CloseOlderDuration time.Duration
-	ForceCloseFiles    bool             `yaml:"force_close_files"`
-	ExcludeLines       []string         `yaml:"exclude_lines"`
-	IncludeLines       []string         `yaml:"include_lines"`
-	MaxBytes           int              `yaml:"max_bytes"`
-	Multiline          *MultilineConfig `yaml:"multiline"`
-}
-
-type MultilineConfig struct {
-	Negate   bool   `yaml:"negate"`
-	Match    string `yaml:"match"`
-	MaxLines *int   `yaml:"max_lines"`
-	Pattern  string `yaml:"pattern"`
-	Timeout  string `yaml:"timeout"`
-}
+var (
+	DefaultConfig = Config{
+		RegistryFile: "registry",
+		SpoolSize:    2048,
+		IdleTimeout:  5 * time.Second,
+	}
+)
 
 const (
 	LogInputType   = "log"
@@ -134,24 +83,29 @@ func mergeConfigFiles(configFiles []string, config *Config) error {
 	for _, file := range configFiles {
 		logp.Info("Additional configs loaded from: %s", file)
 
-		tmpConfig := &Config{}
-		cfgfile.Read(tmpConfig, file)
+		tmpConfig := struct {
+			Filebeat Config
+		}{}
+		cfgfile.Read(&tmpConfig, file)
 
-		config.Filebeat.Prospectors = append(config.Filebeat.Prospectors, tmpConfig.Filebeat.Prospectors...)
+		config.Prospectors = append(config.Prospectors, tmpConfig.Filebeat.Prospectors...)
 	}
 
 	return nil
 }
 
 // Fetches and merges all config files given by configDir. All are put into one config object
-func (config *Config) FetchConfigs() {
+func (config *Config) FetchConfigs() error {
 
-	configDir := config.Filebeat.ConfigDir
+	configDir := config.ConfigDir
 
 	// If option not set, do nothing
 	if configDir == "" {
-		return
+		return nil
 	}
+
+	// If configDir is relative, consider it relative to the config path
+	configDir = paths.Resolve(paths.Config, configDir)
 
 	// Check if optional configDir is set to fetch additional config files
 	logp.Info("Additional config files are fetched from: %s", configDir)
@@ -160,15 +114,20 @@ func (config *Config) FetchConfigs() {
 
 	if err != nil {
 		log.Fatal("Could not use config_dir of: ", configDir, err)
+		return err
 	}
 
 	err = mergeConfigFiles(configFiles, config)
-
 	if err != nil {
 		log.Fatal("Error merging config files: ", err)
+		return err
 	}
 
-	if len(config.Filebeat.Prospectors) == 0 {
-		log.Fatalf("No paths given. What files do you want me to watch?")
+	if len(config.Prospectors) == 0 {
+		err := errors.New("No paths given. What files do you want me to watch?")
+		log.Fatalf("%v", err)
+		return err
 	}
+
+	return nil
 }

@@ -1,120 +1,84 @@
-/*
-
-Metricbeat collects metric sets from different modules.
-
-
-Each event created has the following format:
-
-	curl -XPUT http://localhost:9200/metricbeat/metricsets -d
-	{
-		"metriset": metricsetName,
-		"module": moduleName,
-		"moduleName-metricSetName": {
-			"metric1": "value",
-			"metric2": "value",
-			"metric3": "value",
-			"nestedmetric": {
-				"metric4": "value"
-			}
-		},
-		"@timestamp": timestamp
-	}
-
-All documents are currently stored in one index called metricbeat. It is important to use an independent namespace
-for each MetricSet to prevent type conflicts. Also all values are stored under the same type "metricsets".
-
-*/
 package beater
 
 import (
-	"fmt"
+	"sync"
 
 	"github.com/elastic/beats/libbeat/beat"
-	"github.com/elastic/beats/libbeat/cfgfile"
+	"github.com/elastic/beats/libbeat/common"
 	"github.com/elastic/beats/libbeat/logp"
-	"github.com/elastic/beats/metricbeat/helper"
+	"github.com/elastic/beats/libbeat/publisher"
+	"github.com/elastic/beats/metricbeat/mb"
+
+	"github.com/pkg/errors"
 )
 
+// Metricbeat implements the Beater interface for metricbeat.
 type Metricbeat struct {
-	done          chan struct{}
-	MbConfig      *MetricbeatConfig
-	ModulesConfig *RawModulesConfig
-	MetricsConfig *RawMetricsConfig
+	done    chan struct{}    // Channel used to initiate shutdown.
+	modules []*ModuleWrapper // Active list of modules.
+	client  publisher.Client // Publisher client.
 }
 
-// New creates a new Metricbeat instance
-func New() *Metricbeat {
-	return &Metricbeat{}
-}
+// New creates and returns a new Metricbeat instance.
+func New(b *beat.Beat, rawConfig *common.Config) (beat.Beater, error) {
+	// List all registered modules and metricsets.
+	logp.Info("%s", mb.Registry.String())
 
-func (mb *Metricbeat) Config(b *beat.Beat) error {
-
-	mb.MbConfig = &MetricbeatConfig{}
-	err := cfgfile.Read(mb.MbConfig, "")
+	config := Config{}
+	err := rawConfig.Unpack(&config)
 	if err != nil {
-		fmt.Println(err)
-		logp.Err("Error reading configuration file: %v", err)
-		return err
+		return nil, errors.Wrap(err, "error reading configuration file")
 	}
 
-	mb.ModulesConfig = &RawModulesConfig{}
-	err = cfgfile.Read(mb.ModulesConfig, "")
+	modules, err := NewModuleWrappers(config.Modules, mb.Registry)
 	if err != nil {
-		fmt.Println(err)
-		logp.Err("Error reading configuration file: %v", err)
-		return err
+		return nil, err
 	}
 
-	mb.MetricsConfig = &RawMetricsConfig{}
-	err = cfgfile.Read(mb.MetricsConfig, "")
-	if err != nil {
-		fmt.Println(err)
-		logp.Err("Error reading configuration file: %v", err)
-		return err
+	mb := &Metricbeat{
+		done:    make(chan struct{}),
+		modules: modules,
+	}
+	return mb, nil
+}
+
+// Run starts the workers for Metricbeat and blocks until Stop is called
+// and the workers complete. Each host associated with a MetricSet is given its
+// own goroutine for fetching data. The ensures that each host is isolated so
+// that a single unresponsive host cannot inadvertently block other hosts
+// within the same Module and MetricSet from collection.
+func (bt *Metricbeat) Run(b *beat.Beat) error {
+
+	bt.client = b.Publisher.Connect()
+
+	// Start each module.
+	var cs []<-chan common.MapStr
+	for _, mw := range bt.modules {
+		c := mw.Start(bt.done)
+		cs = append(cs, c)
 	}
 
-	logp.Info("Setup base and raw configuration for Modules and Metrics")
-	// Apply the base configuration to each module and metric
-	for moduleName, module := range helper.Registry {
-		// Check if config for module exist. Only configured modules are loaded
-		if _, ok := mb.MbConfig.Metricbeat.Modules[moduleName]; !ok {
-			continue
-		}
-		module.BaseConfig = mb.MbConfig.getModuleConfig(moduleName)
-		module.RawConfig = mb.ModulesConfig.Metricbeat.Modules[moduleName]
-		module.Enabled = true
+	// Consume data from all modules and publish it. When the modules stop they
+	// close their output channels. When all the modules' channels are closed
+	// PublishChannels exit.
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		PublishChannels(bt.client, cs...)
+	}()
 
-		for metricSetName, metricSet := range module.MetricSets {
-			// Check if config for metricset exist. Only configured metricset are loaded
-			if _, ok := mb.MbConfig.getModuleConfig(moduleName).MetricSets[metricSetName]; !ok {
-				continue
-			}
-			metricSet.BaseConfig = mb.MbConfig.getModuleConfig(moduleName).MetricSets[metricSetName]
-			metricSet.RawConfig = mb.MetricsConfig.Metricbeat.Modules[moduleName].MetricSets[metricSetName]
-			metricSet.Enabled = true
-		}
-	}
-
+	// Wait for PublishChannels to stop publishing.
+	wg.Wait()
 	return nil
 }
 
-func (mb *Metricbeat) Setup(b *beat.Beat) error {
-	mb.done = make(chan struct{})
-	return nil
-}
-
-func (mb *Metricbeat) Run(b *beat.Beat) error {
-
-	helper.StartModules(b)
-	<-mb.done
-
-	return nil
-}
-
-func (mb *Metricbeat) Cleanup(b *beat.Beat) error {
-	return nil
-}
-
-func (mb *Metricbeat) Stop() {
-	close(mb.done)
+// Stop signals to Metricbeat that it should stop. It closes the "done" channel
+// and closes the publisher client associated with each Module.
+//
+// Stop should only be called a single time. Calling it more than once may
+// result in undefined behavior.
+func (bt *Metricbeat) Stop() {
+	bt.client.Close()
+	close(bt.done)
 }

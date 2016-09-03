@@ -1,9 +1,0 @@
-[[faq]]
-== Frequently Asked Questions
-
-This section contains frequently asked questions about Topbeat. Also check out the
-https://discuss.elastic.co/c/beats/topbeat[Topbeat discussion forum].
-
-=== Question 1
-
-Answer TBD.
