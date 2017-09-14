@@ -1,25 +1,45 @@
 {
-   "@timestamp": "2016-05-11T23:25:32.317Z",
-   "beat": {
-     "hostname": "host.example.com",
-     "name": "host.example.com"
+    "@timestamp": "2016-05-23T08:05:34.853Z",
+    "beat": {
+        "hostname": "host.example.com",
+        "name": "host.example.com"
     },
-   "metricset": {
-      "module": "system",
-      "name": "diskio",
-      "rtt": 17082,
-   },
-   "system": {
-     "diskio": {
-        "io_time": 21110,
-        "name": "sda2",
-        "read_bytes": 160079872,
-        "read_count": 21292,
-        "read_time": 20070,
-        "write_bytes": 799186944,
-        "write_count": 3208,
-        "write_time": 90070
-      }
+    "metricset": {
+        "host": "localhost",
+        "module": "system",
+        "name": "diskio",
+        "rtt": 115
+    },
+    "system": {
+        "diskio": {
+            "io": {
+                "time": 4130
+            },
+            "name": "vda1",
+            "read": {
+                "bytes": 204800,
+                "count": 36,
+                "time": 960
+            },
+            "write": {
+                "bytes": 2281472,
+                "count": 224,
+                "time": 29700
+            },
+            "iostat": {
+                "avg_queue_size": 0.020000,
+                "avg_request_size": 5120.000000,
+                "await": 0.010000,
+                "busy": 0.100000,
+                "read_byte_per_sec": 1034.420132,
+                "read_request_per_sec": 2.938410,
+                "read_request_merged_per_sec": 0.000000,
+                "service_time": 0.030000,
+                "write_byte_per_sec": 20531.328321,
+                "write_request_per_sec": 4.010025,
+                "write_request_merged_per_sec": 0.000000
+            }
+        }
     },
     "type": "metricsets"
 }

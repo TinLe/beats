@@ -4,8 +4,8 @@ import (
 	"time"
 
 	"github.com/Shopify/sarama"
-	"github.com/elastic/beats/libbeat/common"
-	"github.com/elastic/beats/libbeat/outputs"
+
+	"github.com/elastic/beats/libbeat/publisher"
 )
 
 type message struct {
@@ -20,20 +20,10 @@ type message struct {
 	hash      uint32
 	partition int32
 
-	event common.MapStr
+	data publisher.Event
 }
 
 var kafkaMessageKey interface{} = int(0)
-
-func messageFromData(d *outputs.Data) *message {
-	if m, found := d.Values.Get(kafkaMessageKey); found {
-		return m.(*message)
-	}
-
-	m := &message{partition: -1}
-	d.AddValue(kafkaMessageKey, m)
-	return m
-}
 
 func (m *message) initProducerMessage() {
 	m.msg = sarama.ProducerMessage{

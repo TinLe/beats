@@ -13,7 +13,6 @@ import (
 )
 
 func Test_Rotator(t *testing.T) {
-
 	if testing.Verbose() {
 		LogInit(LOG_DEBUG, "", false, true, []string{"rotator"})
 	}
@@ -24,7 +23,7 @@ func Test_Rotator(t *testing.T) {
 		return
 	}
 
-	Debug("rotator", "Direcotry: %s", dir)
+	Debug("rotator", "Directory: %s", dir)
 
 	rotateeverybytes := uint64(1000)
 	keepfiles := 3
@@ -84,19 +83,19 @@ func Test_Rotator(t *testing.T) {
 		return
 	}
 
-	file_0, err := ioutil.ReadFile(rotator.FilePath(0))
-	if err != nil || bytes.Equal(file_0, []byte("4")) {
-		t.Errorf("Wrong contents of file 0: %s, expected: %s", string(file_0), "4")
+	file0, err := ioutil.ReadFile(rotator.FilePath(0))
+	if err != nil || bytes.Equal(file0, []byte("4")) {
+		t.Errorf("Wrong contents of file 0: %s, expected: %s", string(file0), "4")
 	}
 
-	file_1, err := ioutil.ReadFile(rotator.FilePath(1))
-	if err != nil || bytes.Equal(file_1, []byte("3")) {
-		t.Errorf("Wrong contents of file 1: %s", string(file_1))
+	file1, err := ioutil.ReadFile(rotator.FilePath(1))
+	if err != nil || bytes.Equal(file1, []byte("3")) {
+		t.Errorf("Wrong contents of file 1: %s", string(file1))
 	}
 
-	file_2, err := ioutil.ReadFile(rotator.FilePath(2))
-	if err != nil || bytes.Equal(file_2, []byte("2")) {
-		t.Errorf("Wrong contents of file 2: %s", string(file_2))
+	file2, err := ioutil.ReadFile(rotator.FilePath(2))
+	if err != nil || bytes.Equal(file2, []byte("2")) {
+		t.Errorf("Wrong contents of file 2: %s", string(file2))
 	}
 
 	if rotator.FileExists(3) {
@@ -107,7 +106,6 @@ func Test_Rotator(t *testing.T) {
 }
 
 func Test_Rotator_By_Bytes(t *testing.T) {
-
 	if testing.Verbose() {
 		LogInit(LOG_DEBUG, "", false, true, []string{"rotator"})
 	}
@@ -118,7 +116,7 @@ func Test_Rotator_By_Bytes(t *testing.T) {
 		return
 	}
 
-	Debug("rotator", "Direcotry: %s", dir)
+	Debug("rotator", "Directory: %s", dir)
 
 	rotateeverybytes := uint64(100)
 	keepfiles := 3
@@ -160,4 +158,46 @@ func TestConfigSane(t *testing.T) {
 	}
 	assert.NotNil(t, rotator.CheckIfConfigSane())
 
+	perms := uint32(0544)
+	rotator = FileRotator{
+		Name:        "test2",
+		Permissions: &perms,
+	}
+	assert.Nil(t, rotator.CheckIfConfigSane())
+
+	perms = uint32(077777)
+	rotator = FileRotator{
+		Name:        "test2",
+		Permissions: &perms,
+	}
+	assert.NotNil(t, rotator.CheckIfConfigSane())
+}
+
+func TestRaceConditions(t *testing.T) {
+	// Make sure concurrent `WriteLine` calls don't end up in race conditions around `rotator.current`
+	if testing.Verbose() {
+		LogInit(LOG_DEBUG, "", false, true, []string{"rotator"})
+	}
+
+	dir, err := ioutil.TempDir("", "test_rotator_")
+	if err != nil {
+		t.Errorf("Error: %s", err.Error())
+		return
+	}
+
+	Debug("rotator", "Directory: %s", dir)
+
+	rotateeverybytes := uint64(10)
+	keepfiles := 20
+
+	rotator := FileRotator{
+		Path:             dir,
+		Name:             "testbeat",
+		RotateEveryBytes: &rotateeverybytes,
+		KeepFiles:        &keepfiles,
+	}
+
+	for i := 0; i < 1000; i++ {
+		go rotator.WriteLine([]byte(string(i)))
+	}
 }

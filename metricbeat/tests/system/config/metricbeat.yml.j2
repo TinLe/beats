@@ -14,6 +14,18 @@ metricbeat.modules:
     {% endfor %}
   {% endif -%}
 
+  {% if m.socket -%}
+  socket: "{{ m.socket }}"
+  {% endif -%}
+
+  {% if m.username -%}
+  username: {{ m.username }}
+  {% endif -%}
+
+  {% if m.password -%}
+  password: {{ m.password }}
+  {% endif -%}
+
   {% if m.metricsets -%}
   metricsets:
     {% for ms in m.metricsets -%}
@@ -25,18 +37,26 @@ metricbeat.modules:
   period: {{ m.period }}
   {% endif -%}
 
+  {% if m.path -%}
+  metrics_path: {{ m.path }}
+  {% endif -%}
+
   {% if m.timeout -%}
   timeout: {{ m.timeout }}
+  {% endif -%}
+
+  {% if m.namespace -%}
+  namespace: {{ m.namespace }}
   {% endif -%}
 
   {% if m.processes -%}
   processes: {{ m.processes }}
   {% endif -%}
 
-  {% if m.filters is defined -%}
-  filters:
-    {% for f in m.filters -%}
-    {% for k, v in f.items() -%}
+  {% if m.processors is defined -%}
+  processors:
+    {% for p in m.processors -%}
+    {% for k, v in p.items() -%}
     - {{ k }}.fields: [
       {%- for field in v -%}
       '{{ field }}' {%- if not loop.last %}, {% endif -%}
@@ -66,7 +86,20 @@ metricbeat.modules:
   {{ k }}: {{ v }}
   {% endfor %}
   {% endif -%}
+  {% if m.additional_content -%}
+  {{ m.additional_content }}
+  {% endif -%}
 {%- endfor %}
+
+{% if reload or reload_path -%}
+metricbeat.config.modules:
+  path: {{ reload_path|default("${path.config}/modules.d/*.yml") }}
+  reload.period: 1s
+  reload.enabled: {{ reload|default("false")}}
+{% endif -%}
+
+# Disable random start delay for metricsets.
+metricbeat.max_start_delay: 0
 
 #================================ General =====================================
 
@@ -87,26 +120,16 @@ tags: [
   {%- endif -%}
 ]
 
-{% if geoip_paths is not none %}
-geoip:
-  paths: [
-      {%- for path in geoip_paths -%}
-          "{{ beat.working_dir + '/' + path }}"
-          {%- if not loop.last %}, {% endif -%}
-      {%- endfor -%}
-  ]
-{%- endif %}
+
+#================================ Processors =====================================
 
 {%- if processors %}
-
-#================================ Filters =====================================
-
 processors:
 {%- for processor in processors %}
-{%- for name, settings in processor.iteritems() %}
+{%- for name, settings in processor.items() %}
 - {{name}}:
   {%- if settings %}
-  {%- for k, v in settings.iteritems() %}
+  {%- for k, v in settings.items() %}
     {{k}}:
       {{v | default([])}}
   {%- endfor %}
@@ -115,6 +138,13 @@ processors:
 {%- endfor %}
 
 {%- endif %}
+
+#================================ Queue =====================================
+
+queue.mem:
+  events: 4096
+  flush.min_events: 8
+  flush.timeout: 0.1s
 
 #================================ Outputs =====================================
 

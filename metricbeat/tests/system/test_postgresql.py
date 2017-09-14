@@ -6,6 +6,8 @@ from nose.plugins.attrib import attr
 
 class Test(metricbeat.BaseTest):
 
+    COMPOSE_SERVICES = ['postgresql']
+
     def common_checks(self, output):
         # Ensure no errors or warnings exist in the log.
         log = self.get_log()
@@ -18,7 +20,8 @@ class Test(metricbeat.BaseTest):
             self.assert_fields_are_documented(evt)
 
     def get_hosts(self):
-        return [os.getenv("POSTGRESQL_DSN")]
+        return [os.getenv("POSTGRESQL_DSN")], os.getenv("POSTGRESQL_USERNAME"), \
+            os.getenv("POSTGRESQL_PASSWORD")
 
     @unittest.skipUnless(metricbeat.INTEGRATION_TESTS, "integration test")
     @attr('integration')
@@ -26,10 +29,13 @@ class Test(metricbeat.BaseTest):
         """
         PostgreSQL module outputs an event.
         """
+        hosts, username, password = self.get_hosts()
         self.render_config_template(modules=[{
             "name": "postgresql",
             "metricsets": ["activity"],
-            "hosts": self.get_hosts(),
+            "hosts": hosts,
+            "username": username,
+            "password": password,
             "period": "5s"
         }])
         proc = self.start_beat()
@@ -50,10 +56,13 @@ class Test(metricbeat.BaseTest):
         """
         PostgreSQL module outputs an event.
         """
+        hosts, username, password = self.get_hosts()
         self.render_config_template(modules=[{
             "name": "postgresql",
             "metricsets": ["database"],
-            "hosts": self.get_hosts(),
+            "hosts": hosts,
+            "username": username,
+            "password": password,
             "period": "5s"
         }])
         proc = self.start_beat()
@@ -77,10 +86,13 @@ class Test(metricbeat.BaseTest):
         """
         PostgreSQL module outputs an event.
         """
+        hosts, username, password = self.get_hosts()
         self.render_config_template(modules=[{
             "name": "postgresql",
             "metricsets": ["bgwriter"],
-            "hosts": self.get_hosts(),
+            "hosts": hosts,
+            "username": username,
+            "password": password,
             "period": "5s"
         }])
         proc = self.start_beat()

@@ -1,26 +1,27 @@
 package kafka
 
 import (
-	"encoding/json"
-	"expvar"
 	"fmt"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/Shopify/sarama"
 
-	"github.com/elastic/beats/libbeat/common"
 	"github.com/elastic/beats/libbeat/common/fmtstr"
 	"github.com/elastic/beats/libbeat/logp"
 	"github.com/elastic/beats/libbeat/outputs"
+	"github.com/elastic/beats/libbeat/outputs/codec"
 	"github.com/elastic/beats/libbeat/outputs/outil"
+	"github.com/elastic/beats/libbeat/publisher"
 )
 
 type client struct {
+	stats  *outputs.Stats
 	hosts  []string
 	topic  outil.Selector
 	key    *fmtstr.EventFormatString
+	index  string
+	codec  codec.Codec
 	config sarama.Config
 
 	producer sarama.AsyncProducer
@@ -29,38 +30,38 @@ type client struct {
 }
 
 type msgRef struct {
-	count int32
-	batch []outputs.Data
-	cb    func([]outputs.Data, error)
+	client *client
+	count  int32
+	total  int
+	failed []publisher.Event
+	batch  publisher.Batch
 
 	err error
 }
 
-var (
-	ackedEvents            = expvar.NewInt("libbeat.kafka.published_and_acked_events")
-	eventsNotAcked         = expvar.NewInt("libbeat.kafka.published_but_not_acked_events")
-	publishEventsCallCount = expvar.NewInt("libbeat.kafka.call_count.PublishEvents")
-)
-
 func newKafkaClient(
+	stats *outputs.Stats,
 	hosts []string,
+	index string,
 	key *fmtstr.EventFormatString,
 	topic outil.Selector,
+	writer codec.Codec,
 	cfg *sarama.Config,
 ) (*client, error) {
 	c := &client{
+		stats:  stats,
 		hosts:  hosts,
 		topic:  topic,
 		key:    key,
+		index:  index,
+		codec:  writer,
 		config: *cfg,
 	}
 	return c, nil
 }
 
-func (c *client) Connect(timeout time.Duration) error {
+func (c *client) Connect() error {
 	debugf("connect: %v", c.hosts)
-
-	c.config.Net.DialTimeout = timeout
 
 	// try to connect
 	producer, err := sarama.NewAsyncProducer(c.hosts, &c.config)
@@ -87,41 +88,30 @@ func (c *client) Close() error {
 	return nil
 }
 
-func (c *client) AsyncPublishEvent(
-	cb func(error),
-	data outputs.Data,
-) error {
-	return c.AsyncPublishEvents(func(_ []outputs.Data, err error) {
-		cb(err)
-	}, []outputs.Data{data})
-}
-
-func (c *client) AsyncPublishEvents(
-	cb func([]outputs.Data, error),
-	data []outputs.Data,
-) error {
-	publishEventsCallCount.Add(1)
-	debugf("publish events")
+func (c *client) Publish(batch publisher.Batch) error {
+	events := batch.Events()
+	c.stats.NewBatch(len(events))
 
 	ref := &msgRef{
-		count: int32(len(data)),
-		batch: data,
-		cb:    cb,
+		client: c,
+		count:  int32(len(events)),
+		total:  len(events),
+		failed: nil,
+		batch:  batch,
 	}
 
 	ch := c.producer.Input()
-
-	for i := range data {
-		d := &data[i]
-
+	for i := range events {
+		d := &events[i]
 		msg, err := c.getEventMessage(d)
 		if err != nil {
 			logp.Err("Dropping event: %v", err)
 			ref.done()
+			c.stats.Dropped(1)
 			continue
 		}
-		msg.ref = ref
 
+		msg.ref = ref
 		msg.initProducerMessage()
 		ch <- &msg.msg
 	}
@@ -129,39 +119,47 @@ func (c *client) AsyncPublishEvents(
 	return nil
 }
 
-func (c *client) getEventMessage(data *outputs.Data) (*message, error) {
-	event := data.Event
-	msg := messageFromData(data)
-	if msg.topic != "" {
-		return msg, nil
-	}
+func (c *client) getEventMessage(data *publisher.Event) (*message, error) {
+	event := &data.Content
+	msg := &message{partition: -1, data: *data}
+	if event.Meta != nil {
+		if value, ok := event.Meta["partition"]; ok {
+			if partition, ok := value.(int32); ok {
+				msg.partition = partition
+			}
+		}
 
-	msg.event = event
-
-	topic, err := c.topic.Select(event)
-	if err != nil {
-		return nil, fmt.Errorf("setting kafka topic failed with %v", err)
-	}
-	msg.topic = topic
-
-	jsonEvent, err := json.Marshal(event)
-	if err != nil {
-		return nil, fmt.Errorf("json encoding failed with %v", err)
-	}
-	msg.value = jsonEvent
-
-	// message timestamps have been added to kafka with version 0.10.0.0
-	var ts time.Time
-	if c.config.Version.IsAtLeast(sarama.V0_10_0_0) {
-		if tsRaw, ok := event["@timestamp"]; ok {
-			if tmp, ok := tsRaw.(common.Time); ok {
-				ts = time.Time(tmp)
-			} else if tmp, ok := tsRaw.(time.Time); ok {
-				ts = tmp
+		if value, ok := event.Meta["topic"]; ok {
+			if topic, ok := value.(string); ok {
+				msg.topic = topic
 			}
 		}
 	}
-	msg.ts = ts
+	if msg.topic == "" {
+		topic, err := c.topic.Select(event)
+		if err != nil {
+			return nil, fmt.Errorf("setting kafka topic failed with %v", err)
+		}
+		msg.topic = topic
+		if event.Meta == nil {
+			event.Meta = map[string]interface{}{}
+		}
+		event.Meta["topic"] = topic
+	}
+
+	serializedEvent, err := c.codec.Encode(c.index, event)
+	if err != nil {
+		return nil, err
+	}
+
+	buf := make([]byte, len(serializedEvent))
+	copy(buf, serializedEvent)
+	msg.value = buf
+
+	// message timestamps have been added to kafka with version 0.10.0.0
+	if c.config.Version.IsAtLeast(sarama.V0_10_0_0) {
+		msg.ts = event.Timestamp
+	}
 
 	if c.key != nil {
 		if key, err := c.key.RunBytes(event); err == nil {
@@ -188,7 +186,7 @@ func (c *client) errorWorker(ch <-chan *sarama.ProducerError) {
 
 	for errMsg := range ch {
 		msg := errMsg.Msg.Metadata.(*message)
-		msg.ref.fail(errMsg.Err)
+		msg.ref.fail(msg, errMsg.Err)
 	}
 }
 
@@ -196,8 +194,20 @@ func (r *msgRef) done() {
 	r.dec()
 }
 
-func (r *msgRef) fail(err error) {
-	r.err = err
+func (r *msgRef) fail(msg *message, err error) {
+	switch err {
+	case sarama.ErrInvalidMessage:
+		logp.Err("Kafka (topic=%v): dropping invalid message", msg.topic)
+
+	case sarama.ErrMessageSizeTooLarge, sarama.ErrInvalidMessageSize:
+		logp.Err("Kafka (topic=%v): dropping too large message of size %v.",
+			msg.topic,
+			len(msg.key)+len(msg.value))
+
+	default:
+		r.failed = append(r.failed, msg.data)
+		r.err = err
+	}
 	r.dec()
 }
 
@@ -208,14 +218,22 @@ func (r *msgRef) dec() {
 	}
 
 	debugf("finished kafka batch")
+	stats := r.client.stats
 
 	err := r.err
 	if err != nil {
-		eventsNotAcked.Add(int64(len(r.batch)))
+		failed := len(r.failed)
+		success := r.total - failed
+		r.batch.RetryEvents(r.failed)
+
+		stats.Failed(failed)
+		if success > 0 {
+			stats.Acked(success)
+		}
+
 		debugf("Kafka publish failed with: %v", err)
-		r.cb(r.batch, err)
 	} else {
-		ackedEvents.Add(int64(len(r.batch)))
-		r.cb(nil, nil)
+		r.batch.ACK()
+		stats.Acked(r.total)
 	}
 }

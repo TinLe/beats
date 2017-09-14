@@ -5,21 +5,20 @@
         "name": "host.example.com"
     },
     "metricset": {
-        "host": "localhost",
         "module": "system",
         "name": "core",
         "rtt": 115
     },
     "system": {
         "core": {
-            "id": 0,
+            "id": 1,
             "idle": {
-                "pct": 0.9479,
-                "ticks": 168535
+                "pct": 0.98,
+                "ticks": 243110733
             },
             "iowait": {
                 "pct": 0,
-                "ticks": 608
+                "ticks": 0
             },
             "irq": {
                 "pct": 0,
@@ -31,7 +30,7 @@
             },
             "softirq": {
                 "pct": 0,
-                "ticks": 34
+                "ticks": 0
             },
             "steal": {
                 "pct": 0,
@@ -39,13 +38,12 @@
             },
             "system": {
                 "pct": 0,
-                "ticks": 3220
+                "ticks": 840906
             },
             "user": {
-                "pct": 0.0521,
-                "ticks": 19180
+                "pct": 0.02,
+                "ticks": 1266791
             }
         }
-    },
-    "type": "metricsets"
+    }
 }

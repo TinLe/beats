@@ -63,6 +63,10 @@ type Consumer interface {
 	// or OffsetOldest
 	ConsumePartition(topic string, partition int32, offset int64) (PartitionConsumer, error)
 
+	// HighWaterMarks returns the current high water marks for each topic and partition.
+	// Consistency between partitions is not guaranteed since high water marks are updated separately.
+	HighWaterMarks() map[string]map[int32]int64
+
 	// Close shuts down the consumer. It must be called after all child
 	// PartitionConsumers have already been closed.
 	Close() error
@@ -161,6 +165,22 @@ func (c *consumer) ConsumePartition(topic string, partition int32, offset int64)
 	child.broker.input <- child
 
 	return child, nil
+}
+
+func (c *consumer) HighWaterMarks() map[string]map[int32]int64 {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+
+	hwms := make(map[string]map[int32]int64)
+	for topic, p := range c.children {
+		hwm := make(map[int32]int64, len(p))
+		for partition, pc := range p {
+			hwm[partition] = pc.HighWaterMarkOffset()
+		}
+		hwms[topic] = hwm
+	}
+
+	return hwms
 }
 
 func (c *consumer) addChild(child *partitionConsumer) error {
@@ -269,10 +289,11 @@ type PartitionConsumer interface {
 }
 
 type partitionConsumer struct {
-	consumer  *consumer
-	conf      *Config
-	topic     string
-	partition int32
+	highWaterMarkOffset int64 // must be at the top of the struct because https://golang.org/pkg/sync/atomic/#pkg-note-BUG
+	consumer            *consumer
+	conf                *Config
+	topic               string
+	partition           int32
 
 	broker   *brokerConsumer
 	messages chan *ConsumerMessage
@@ -282,9 +303,8 @@ type partitionConsumer struct {
 	trigger, dying chan none
 	responseResult error
 
-	fetchSize           int32
-	offset              int64
-	highWaterMarkOffset int64
+	fetchSize int32
+	offset    int64
 }
 
 var errTimedOut = errors.New("timed out feeding messages to the user") // not user-facing
@@ -304,7 +324,7 @@ func (child *partitionConsumer) sendError(err error) {
 }
 
 func (child *partitionConsumer) dispatcher() {
-	for _ = range child.trigger {
+	for range child.trigger {
 		select {
 		case <-child.dying:
 			close(child.trigger)
@@ -391,7 +411,7 @@ func (child *partitionConsumer) Close() error {
 	child.AsyncClose()
 
 	go withRecover(func() {
-		for _ = range child.messages {
+		for range child.messages {
 			// drain
 		}
 	})
@@ -414,17 +434,24 @@ func (child *partitionConsumer) HighWaterMarkOffset() int64 {
 func (child *partitionConsumer) responseFeeder() {
 	var msgs []*ConsumerMessage
 	expiryTimer := time.NewTimer(child.conf.Consumer.MaxProcessingTime)
+	expireTimedOut := false
 
 feederLoop:
 	for response := range child.feeder {
 		msgs, child.responseResult = child.parseResponse(response)
 
 		for i, msg := range msgs {
+			if !expiryTimer.Stop() && !expireTimedOut {
+				// expiryTimer was expired; clear out the waiting msg
+				<-expiryTimer.C
+			}
 			expiryTimer.Reset(child.conf.Consumer.MaxProcessingTime)
+			expireTimedOut = false
 
 			select {
 			case child.messages <- msg:
 			case <-expiryTimer.C:
+				expireTimedOut = true
 				child.responseResult = errTimedOut
 				child.broker.acks.Done()
 				for _, msg = range msgs[i:] {
@@ -481,21 +508,26 @@ func (child *partitionConsumer) parseResponse(response *FetchResponse) ([]*Consu
 	for _, msgBlock := range block.MsgSet.Messages {
 
 		for _, msg := range msgBlock.Messages() {
-			if prelude && msg.Offset < child.offset {
+			offset := msg.Offset
+			if msg.Msg.Version >= 1 {
+				baseOffset := msgBlock.Offset - msgBlock.Messages()[len(msgBlock.Messages())-1].Offset
+				offset += baseOffset
+			}
+			if prelude && offset < child.offset {
 				continue
 			}
 			prelude = false
 
-			if msg.Offset >= child.offset {
+			if offset >= child.offset {
 				messages = append(messages, &ConsumerMessage{
 					Topic:     child.topic,
 					Partition: child.partition,
 					Key:       msg.Msg.Key,
 					Value:     msg.Msg.Value,
-					Offset:    msg.Offset,
+					Offset:    offset,
 					Timestamp: msg.Msg.Timestamp,
 				})
-				child.offset = msg.Offset + 1
+				child.offset = offset + 1
 			} else {
 				incomplete = true
 			}

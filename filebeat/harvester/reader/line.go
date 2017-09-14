@@ -27,7 +27,6 @@ type Line struct {
 
 // NewLine creates a new Line reader object
 func NewLine(input io.Reader, codec encoding.Encoding, bufferSize int) (*Line, error) {
-
 	encoder := codec.NewEncoder()
 
 	// Create newline char based on encoding
@@ -49,7 +48,6 @@ func NewLine(input io.Reader, codec encoding.Encoding, bufferSize int) (*Line, e
 
 // Next reads the next line until the new line character
 func (l *Line) Next() ([]byte, int, error) {
-
 	// This loop is need in case advance detects an line ending which turns out
 	// not to be one when decoded. If that is the case, reading continues.
 	for {
@@ -94,7 +92,6 @@ func (l *Line) Next() ([]byte, int, error) {
 // Reads from the buffer until a new line character is detected
 // Returns an error otherwise
 func (l *Line) advance() error {
-
 	// Initial check if buffer has already a newLine character
 	idx := l.inBuffer.IndexFrom(l.inOffset, l.nl)
 
@@ -131,6 +128,8 @@ func (l *Line) advance() error {
 	sz, err := l.decode(idx + len(l.nl))
 	if err != nil {
 		logp.Err("Error decoding line: %s", err)
+		// In case of error increase size by unencoded length
+		sz = idx + len(l.nl)
 	}
 
 	// consume transformed bytes from input buffer
@@ -157,19 +156,20 @@ func (l *Line) decode(end int) (int, error) {
 		var nDst, nSrc int
 
 		nDst, nSrc, err = l.decoder.Transform(buffer, inBytes[start:end], false)
+		if err != nil {
+			// Check if error is different from destination buffer too short
+			if err != transform.ErrShortDst {
+				l.outBuffer.Write(inBytes[0:end])
+				start = end
+				break
+			}
+
+			// Reset error as decoding continues
+			err = nil
+		}
 
 		start += nSrc
-
 		l.outBuffer.Write(buffer[:nDst])
-
-		if err != nil {
-			if err == transform.ErrShortDst { // continue transforming
-				// Reset error as decoding continues
-				err = nil
-				continue
-			}
-			break
-		}
 	}
 
 	l.byteCount += start

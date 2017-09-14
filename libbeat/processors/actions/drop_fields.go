@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/elastic/beats/libbeat/beat"
 	"github.com/elastic/beats/libbeat/common"
 	"github.com/elastic/beats/libbeat/processors"
 )
@@ -19,7 +20,7 @@ func init() {
 			allowedFields("fields", "when")))
 }
 
-func newDropFields(c common.Config) (processors.Processor, error) {
+func newDropFields(c *common.Config) (processors.Processor, error) {
 	config := struct {
 		Fields []string `config:"fields"`
 	}{}
@@ -37,21 +38,27 @@ func newDropFields(c common.Config) (processors.Processor, error) {
 		}
 	}
 
-	f := dropFields{Fields: config.Fields}
+	f := &dropFields{Fields: config.Fields}
 	return f, nil
 }
 
-func (f dropFields) Run(event common.MapStr) (common.MapStr, error) {
+func (f *dropFields) Run(event *beat.Event) (*beat.Event, error) {
+	var errors []string
+
 	for _, field := range f.Fields {
 		err := event.Delete(field)
 		if err != nil {
-			return event, fmt.Errorf("Fail to delete key %s: %s", field, err)
+			errors = append(errors, err.Error())
 		}
 
+	}
+
+	if len(errors) > 0 {
+		return event, fmt.Errorf(strings.Join(errors, ", "))
 	}
 	return event, nil
 }
 
-func (f dropFields) String() string {
+func (f *dropFields) String() string {
 	return "drop_fields=" + strings.Join(f.Fields, ", ")
 }

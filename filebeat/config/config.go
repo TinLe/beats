@@ -1,7 +1,7 @@
 package config
 
 import (
-	"errors"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -15,42 +15,31 @@ import (
 
 // Defaults for config variables which are not set
 const (
-	DefaultInputType = "log"
+	DefaultType = "log"
 )
 
 type Config struct {
-	Prospectors  []*common.Config `config:"prospectors"`
-	SpoolSize    uint64           `config:"spool_size" validate:"min=1"`
-	PublishAsync bool             `config:"publish_async"`
-	IdleTimeout  time.Duration    `config:"idle_timeout" validate:"nonzero,min=0s"`
-	RegistryFile string           `config:"registry_file"`
-	ConfigDir    string           `config:"config_dir"`
+	Prospectors      []*common.Config `config:"prospectors"`
+	RegistryFile     string           `config:"registry_file"`
+	RegistryFlush    time.Duration    `config:"registry_flush"`
+	ConfigDir        string           `config:"config_dir"`
+	ShutdownTimeout  time.Duration    `config:"shutdown_timeout"`
+	Modules          []*common.Config `config:"modules"`
+	ConfigProspector *common.Config   `config:"config.prospectors"`
+	ConfigModules    *common.Config   `config:"config.modules"`
 }
 
 var (
 	DefaultConfig = Config{
-		RegistryFile: "registry",
-		SpoolSize:    2048,
-		IdleTimeout:  5 * time.Second,
+		RegistryFile:    "registry",
+		ShutdownTimeout: 0,
 	}
 )
-
-const (
-	LogInputType   = "log"
-	StdinInputType = "stdin"
-)
-
-// List of valid input types
-var ValidInputType = map[string]struct{}{
-	StdinInputType: {},
-	LogInputType:   {},
-}
 
 // getConfigFiles returns list of config files.
 // In case path is a file, it will be directly returned.
 // In case it is a directory, it will fetch all .yml files inside this directory
 func getConfigFiles(path string) (configFiles []string, err error) {
-
 	// Check if path is valid file or dir
 	stat, err := os.Stat(path)
 	if err != nil {
@@ -79,14 +68,16 @@ func getConfigFiles(path string) (configFiles []string, err error) {
 
 // mergeConfigFiles reads in all config files given by list configFiles and merges them into config
 func mergeConfigFiles(configFiles []string, config *Config) error {
-
 	for _, file := range configFiles {
 		logp.Info("Additional configs loaded from: %s", file)
 
 		tmpConfig := struct {
 			Filebeat Config
 		}{}
-		cfgfile.Read(&tmpConfig, file)
+		err := cfgfile.Read(&tmpConfig, file)
+		if err != nil {
+			return fmt.Errorf("Failed to read %s: %s", file, err)
+		}
 
 		config.Prospectors = append(config.Prospectors, tmpConfig.Filebeat.Prospectors...)
 	}
@@ -96,7 +87,6 @@ func mergeConfigFiles(configFiles []string, config *Config) error {
 
 // Fetches and merges all config files given by configDir. All are put into one config object
 func (config *Config) FetchConfigs() error {
-
 	configDir := config.ConfigDir
 
 	// If option not set, do nothing
@@ -120,12 +110,6 @@ func (config *Config) FetchConfigs() error {
 	err = mergeConfigFiles(configFiles, config)
 	if err != nil {
 		log.Fatal("Error merging config files: ", err)
-		return err
-	}
-
-	if len(config.Prospectors) == 0 {
-		err := errors.New("No paths given. What files do you want me to watch?")
-		log.Fatalf("%v", err)
 		return err
 	}
 

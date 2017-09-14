@@ -1,29 +1,32 @@
 {
-  "@timestamp": "2016-05-23T08:05:34.853Z",
-  "beat": {
-    "hostname": "host.example.com",
-    "name": "host.example.com"
-  },
-  "metricset": {
-    "host": "localhost",
-      "module": "system",
-      "name": "filesystem",
-      "rtt": 115
-  },
-  "system": {
-    "filesystem": {
-      "available": 44886921216,
-      "device_name": "none",
-      "files": 3940352,
-      "free": 48129642496,
-      "free_files": 3399857,
-      "mount_point": "/",
-      "total": 63371726848,
-      "used": {
-        "bytes": 15242084352,
-        "pct": 0.2405
-      }
+    "@timestamp": "2016-05-23T08:05:34.853Z",
+    "beat": {
+        "hostname": "host.example.com",
+        "name": "host.example.com"
+    },
+    "@metadata": {
+        "beat": "noindex",
+        "type": "doc"
+    },
+    "metricset": {
+        "module": "system",
+        "name": "filesystem",
+        "rtt": 115
+    },
+    "system": {
+        "filesystem": {
+            "available": 105569656832,
+            "device_name": "/dev/disk1",
+            "type": "hfs",
+            "files": 4294967279
+            "free": 105831800832,
+            "free_files": 4292793781,
+            "mount_point": "/",
+            "total": 249779191808,
+            "used": {
+                "bytes": 143947390976,
+                "pct": 0.5763
+            },
+        }
     }
-  },
-  "type": "metricsets"
-} 
+}
